@@ -35,6 +35,8 @@ func RunProcess() {
 }
 
 type Card struct {
+	ID      string
+	Owner   string
 	Name    string
 	Tapped  bool
 	Cost    int32
@@ -47,8 +49,9 @@ type Config struct{}
 // Rules are the basic unit that is checking if an action can be applied
 // to a given State
 type Rule struct {
+	Name           string
 	Condition      func(state State, card Card) bool
-	Transformation func(state State) State
+	Transformation func(state State, card Card) State
 }
 
 // State
@@ -57,7 +60,7 @@ type State struct {
 	Board map[string]map[string][]Card
 }
 
-func Evaluate(
+func RunEvaluation(
 	state State,
 	in chan []Card,
 	out chan State,
@@ -73,18 +76,43 @@ func Evaluate(
 				if rule.Condition(state, card) {
 					// apply transformation
 					log.Printf("applying state transformation: %+v", state)
-					state = rule.Transformation(state)
+					state = rule.Transformation(state, card)
 				}
 			}
 		}
 	}
 }
 
+// Apply checks if each action in the set obeys the rules of the game.
+// If it does, it applies that action to the state.
+// If it doesn't, it logs the invalid action and doesn't apply it.
+// This function must have exclusive access to State.
+func Apply(
+	state State,
+	actions []Action,
+) (State, error) {
+	var internalState State = state
+	for _, a := range actions {
+		valid := a.Rule.Condition(internalState, a.Card)
+		if valid {
+			updated := a.Rule.Transformation(internalState, a.Card)
+			internalState = updated
+		} else {
+			return state, fmt.Errorf("failed to validate rule: %s", a.Rule.Name)
+		}
+	}
+	return internalState, nil
+}
+
+// Actions are composed of Rules, which hold a condition and, possibly, a transformation.
+// If they contain a transformation at evaluation time, they will be applied to the state.
+// If they don't contain a transformation at evaluation time, they're effectively noops.
 type Action struct {
-	Rule   Rule
-	Target Card
-	Player string
-	Zone   string
+	Rule     Rule
+	Card     Card
+	TargetID string
+	Player   string
+	Zone     string
 }
 
 type Analysis struct {
@@ -107,6 +135,8 @@ func RunAnalysis(
 	}
 }
 
+// Analyze takes a state object and a set of rules and analyzes possible moves for
+// each player of the game.
 func Analyze(
 	state State,
 	rules []Rule,
@@ -118,10 +148,11 @@ func Analyze(
 				for _, rule := range rules {
 					if rule.Condition(state, card) {
 						analysis.ValidActions = append(analysis.ValidActions, Action{
-							Rule:   rule,
-							Target: card,
-							Player: player,
-							Zone:   zone,
+							Rule:     rule,
+							TargetID: card.ID,
+							Player:   player,
+							Zone:     zone,
+							Card:     card,
 						})
 					}
 				}
@@ -131,6 +162,7 @@ func Analyze(
 	return analysis
 }
 
+// Process handles continually analyzing and applying actions to the game.
 func Process(
 	state State,
 	in <-chan []Card,
